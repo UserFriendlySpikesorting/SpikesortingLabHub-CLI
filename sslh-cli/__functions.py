@@ -1078,12 +1078,12 @@ def export2matlab(config:dict,identifier:str,dependencies:(list,tuple),carrier:d
     depfun    = get_dep_step(config, dependencies[3])
     
     if    depfun == "phy_export":
-        phydir = config['job_evn']['base directory']+'/'+ ( config[identifier]['folder'] if 'folder' in config[dependencies[3]] else 'phy')
+        phydir = config['job_evn']['base directory']+'/'+ ( config[dependencies[3]]['folder'] if 'folder' in config[dependencies[3]] else 'phy')
     elif  depfun == "import_from_phy":
         phydir = config[ dependencies[3] ]['phy_folder']
     else:
-        logger.error(f'The third dependence `{dependencies[2]}` is not phy_export or import_from_phy. In theory we should be here (-.-)')
-        raise RuntimeError(f'The third dependence `{dependencies[2]}` is not phy_export or import_from_phy. In theory we should be here (-.-)')
+        logger.error(f'The 4th dependence `{dependencies[3]}` is not phy_export or import_from_phy. In theory we should not be here (-.-)')
+        raise RuntimeError(f'The 4th dependence `{dependencies[3]}` is not phy_export or import_from_phy. In theory we should not be here (-.-)')
 
     logger.info(f"Exporting to MatLab:")
     phyids = []
