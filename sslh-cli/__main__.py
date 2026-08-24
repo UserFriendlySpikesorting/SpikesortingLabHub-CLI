@@ -308,8 +308,8 @@ def main()->int:
             # help="Save combined json into file")
     # oprs.add_option('-W' ,"--Working-directory"  ,  dest="wordir"  , default=False,   type='str',\
             # help="Set working directory (default use from json file)")
-    # oprs.add_option('-U' ,"--Update-state"       , dest="updatejs" , default=False,  action="store_true",\
-            # help="Update state of sorting (default False)")
+    oprs.add_option('-V' ,"--View-spikesorting"  , dest="view" , default=False,  action="store_true",\
+            help="View existing sorting results instead of running sorting (default Run sorting)")
     oprs.add_option("-X", "--dry-run"            , dest="dryrun"   , default=False,  action="store_true",\
         help="Dry run for upload section")
 
@@ -320,31 +320,40 @@ def main()->int:
         "NAS"   : opts.NAS,
         "dryrun": opts.dryrun
     }
-        
+    if opts.view:
+        if len(args) < 1:
+            exit("Need at least one sorting directory")
+        review = sslh.review
+        #DB>>
+        # print(args)
+        #<<DB
+        for arg in args:
+            review(arg)
+    else:
 
-    for arg in args:
-        if os.path.isfile(arg):
-            try:
-                with open(arg) as fd:
-                    job_conf = json.load(fd)
-            except BaseException as e:
-                sys.stderr.write(f'**cannot read {arg}: {e}**\n')
+        for arg in args:
+            if os.path.isfile(arg):
+                try:
+                    with open(arg) as fd:
+                        job_conf = json.load(fd)
+                except BaseException as e:
+                    sys.stderr.write(f'**cannot read {arg}: {e}**\n')
+                    return 1
+            else:
+                sys.stderr.write(f'**Skipping {arg} as it is not a file**\n')
+                continue
+            x = sslh.base_check(job_conf)
+            if x != 0 :
+                sys.stderr.write(f'Skipping {arg} - basic check returns an error :{x}\n')
+                continue
+            job_conf = update_env(job_conf, opts.ncpu, opts.memory, opts.chunkdur, opts.progress) 
+            if opts.timelim:
+                ret = timelimiter(env_cof,job_conf,opts.proconly,opts.timelim)
+            else:
+                ret = run_the_job(env_cof,job_conf,proconly = opts.proconly)
+            if ret != 0:
+                sys.stderr.write(f'sslh-cli.main: Sorting {arg} failed :{ret}\n')
                 return 1
-        else:
-            sys.stderr.write(f'**Skipping {arg} as it is not a file**\n')
-            continue
-        x = sslh.base_check(job_conf)
-        if x != 0 :
-            sys.stderr.write(f'Skipping {arg} - basic check returns an error :{x}\n')
-            continue
-        job_conf = update_env(job_conf, opts.ncpu, opts.memory, opts.chunkdur, opts.progress) 
-        if opts.timelim:
-            ret = timelimiter(env_cof,job_conf,opts.proconly,opts.timelim)
-        else:
-            ret = run_the_job(env_cof,job_conf,proconly = opts.proconly)
-        if ret != 0:
-            sys.stderr.write(f'sslh-cli.main: Sorting {arg} failed :{ret}\n')
-            return 1
                 
                     
 
