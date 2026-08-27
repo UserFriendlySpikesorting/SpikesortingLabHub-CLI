@@ -191,7 +191,7 @@ STEP_PARAMETERS = {
         "*number of channels" : int,
         "*downsample factor"  : int,
         "*output file"        : str,
-        ">bit volts file"     : str,
+        ">bit volts"          : (float, [float]),
     }
 }
 

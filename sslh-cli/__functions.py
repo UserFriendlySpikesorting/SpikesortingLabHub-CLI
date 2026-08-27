@@ -121,9 +121,12 @@ def downsample_to_lfp(config:dict, identifier:str, dependencies:(list,tuple), ca
       *number of channels : int
       *downsample factor  : int   (e.g. 30 -> 30 kHz becomes 1 kHz)
       *output file         : path of the .h5 file to create
-      >bit volts file      : path to a structure.oebin file, used to convert
-                              raw ADC counts to microvolts. If omitted, the
-                              output stays in raw ADC counts.
+      >bit volts           : float, or a list of one per channel — the
+                              caller-confirmed ADC-count-to-microvolt factor.
+                              If omitted, the output stays in raw ADC counts.
+                              This step never reads structure.oebin itself:
+                              resolving and confirming that value is the
+                              frontend/backend's job, not the worker's.
 
     carrier[identifier] = { 'ds file': <path> }
     """
@@ -141,12 +144,12 @@ def downsample_to_lfp(config:dict, identifier:str, dependencies:(list,tuple), ca
     stepconf = config[identifier]
 
     output_file = __downsample_dat_files(
-        input_files    = stepconf['input files'],
-        num_channels   = int(stepconf['number of channels']),
-        ds_factor      = int(stepconf['downsample factor']),
-        output_file    = stepconf['output file'],
-        bit_volts_file = stepconf.get('bit volts file'),
-        logger         = logger,
+        input_files  = stepconf['input files'],
+        num_channels = int(stepconf['number of channels']),
+        ds_factor    = int(stepconf['downsample factor']),
+        output_file  = stepconf['output file'],
+        bit_volts    = stepconf.get('bit volts'),
+        logger       = logger,
     )
 
     logger.info(f'Downsampled LFP written to {output_file}')
@@ -155,7 +158,7 @@ def downsample_to_lfp(config:dict, identifier:str, dependencies:(list,tuple), ca
     return carrier
 
 
-def __downsample_dat_files(input_files:list, num_channels:int, ds_factor:int, output_file:str, bit_volts_file:(str,None), logger) -> str:
+def __downsample_dat_files(input_files:list, num_channels:int, ds_factor:int, output_file:str, bit_volts:(float,list,None), logger) -> str:
     import numpy as np
     import h5py
     from scipy.signal import cheby1, lfilter
@@ -163,9 +166,11 @@ def __downsample_dat_files(input_files:list, num_channels:int, ds_factor:int, ou
 
     __check_dat_files(input_files, num_channels)
 
-    bit_volts = __read_bit_volts(bit_volts_file, num_channels, logger) if bit_volts_file else None
     if bit_volts is None:
-        logger.warning('No `bit volts file` given — output stays in raw ADC counts, not microvolts')
+        logger.warning('No `bit volts` given — output stays in raw ADC counts, not microvolts')
+    else:
+        bit_volts = np.full((num_channels, 1), bit_volts, dtype=np.float64) if isinstance(bit_volts, (int, float)) \
+            else np.array(bit_volts, dtype=np.float64).reshape(num_channels, 1)
 
     if os.path.isfile(output_file):
         raise RuntimeError(f'Output file already exists — delete it first: {output_file}')
@@ -225,25 +230,6 @@ def __downsample_dat_files(input_files:list, num_channels:int, ds_factor:int, ou
                     global_sample_idx += n_frames
 
     return output_file
-
-
-def __read_bit_volts(oebin_path:str, num_channels:int, logger):
-    """Read per-channel bit_volts from an explicit structure.oebin path. Returns (num_channels,1) array or None."""
-    import numpy as np, json as _json
-    if not os.path.isfile(oebin_path):
-        logger.warning(f'`bit volts file` does not exist: {oebin_path}')
-        return None
-    try:
-        with open(oebin_path) as fd:
-            meta = _json.load(fd)
-        bv = np.array([ch['bit_volts'] for ch in meta['continuous'][0]['channels']], dtype=np.float64)
-        if bv.size < num_channels:
-            logger.warning(f'{oebin_path} reports {bv.size} channels but num_channels={num_channels}. Skipping bit_volts.')
-            return None
-        return bv[:num_channels, np.newaxis]
-    except Exception as e:
-        logger.warning(f'Cannot read bit_volts from {oebin_path}: {e}')
-        return None
 
 
 def combined_recording(config:dict,identifier:str,dependencies:(list,tuple),carrier:dict):

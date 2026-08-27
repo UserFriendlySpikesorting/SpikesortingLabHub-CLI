@@ -36,6 +36,6 @@
         "number of channels": 64,
         "downsample factor": 30,
         "output file": "/path/to/20250521_HDC_Xsom_P6/combined_HDC_Xsom_P6/combined_ds30_HDC_Xsom_P6.h5",
-        "bit volts file": "/path/to/20250521_HDC_Xsom_P6/RecordNode/experiment1/structure.oebin"
+        "bit volts": 0.195
     }
 }
