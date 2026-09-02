@@ -44,11 +44,216 @@ Each step function has the same arguments:
 |  `carrier`   |    dict     | Results of the previous steps                                   |
 """
 
+def combine_raw_dat(config:dict, identifier:str, dependencies:(list,tuple), carrier:dict):
+    """
+    Concatenate a list of raw Open Ephys continuous.dat files into a single
+    binary file, in the order given.
+
+    Config keys:
+      *input files        : list of .dat paths, in the order to concatenate them
+      *number of channels : int
+      *output file        : path of the combined .dat file to create
+
+    carrier[identifier] = { 'raw file': <path> }
+    """
+    logger = logging.getLogger(config['job_id'] + ':' + identifier)
+
+    if not identifier in config:
+        logger.error(f'Cannot find `{identifier}` in the configuration')
+        raise RuntimeError(f'Cannot find `{identifier}` in the configuration')
+
+    x = step_sanity(config, 'combine_raw_dat', identifier)
+    if x != 0:
+        logger.error(f'There is inconsistencies in the configuration for `combine_raw_dat`: {x}')
+        raise RuntimeError(f'There is inconsistencies in the configuration for `combine_raw_dat`: {x}')
+
+    stepconf = config[identifier]
+
+    output_file = __combine_dat_files(
+        input_files  = stepconf['input files'],
+        num_channels = int(stepconf['number of channels']),
+        output_file  = stepconf['output file'],
+        logger       = logger,
+    )
+
+    logger.info(f'Combined recording written to {output_file}')
+
+    carrier[identifier] = {'raw file': output_file}
+    return carrier
+
+
+def __combine_dat_files(input_files:list, num_channels:int, output_file:str, logger) -> str:
+    __check_dat_files(input_files, num_channels)
+
+    if os.path.isfile(output_file):
+        raise RuntimeError(f'Output file already exists — delete it first: {output_file}')
+    os.makedirs(os.path.dirname(output_file), exist_ok=True)
+
+    with open(output_file, 'wb') as out_fid:
+        for src_file in input_files:
+            logger.info(f'  + {src_file}')
+            with open(src_file, 'rb') as in_fid:
+                shutil.copyfileobj(in_fid, out_fid)
+
+    return output_file
+
+
+def __check_dat_files(input_files:list, num_channels:int) -> int:
+    """
+    Raise if any input file is missing or its size is not a whole number of frames.
+    Returns the combined frame count across all files.
+    """
+    bytes_per_frame = num_channels * 2
+    total_frames = 0
+    for p in input_files:
+        if not os.path.isfile(p):
+            raise RuntimeError(f'Input file does not exist: {p}')
+        size = os.path.getsize(p)
+        if size % bytes_per_frame != 0:
+            raise RuntimeError(
+                f'File size ({size} B) is not a multiple of number of channels * 2 ({bytes_per_frame}): {p}'
+            )
+        total_frames += size // bytes_per_frame
+    return total_frames
+
+
+def downsample_to_lfp(config:dict, identifier:str, dependencies:(list,tuple), carrier:dict):
+    """
+    Downsample a list of raw Open Ephys continuous.dat files to LFP with a
+    Chebyshev anti-aliasing filter, saved as HDF5 (float64, time x channels).
+
+    Config keys:
+      *input files        : list of .dat paths, read in order
+      *number of channels : int
+      *downsample factor  : int   (e.g. 30 -> 30 kHz becomes 1 kHz)
+      *output file         : path of the .h5 file to create
+      >bit volts           : float, or a list of one per channel — the
+                              caller-confirmed ADC-count-to-microvolt factor.
+                              If omitted, the output stays in raw ADC counts.
+                              This step never reads structure.oebin itself:
+                              resolving and confirming that value is the
+                              frontend/backend's job, not the worker's.
+
+    carrier[identifier] = { 'ds file': <path> }
+    """
+    logger = logging.getLogger(config['job_id'] + ':' + identifier)
+
+    if not identifier in config:
+        logger.error(f'Cannot find `{identifier}` in the configuration')
+        raise RuntimeError(f'Cannot find `{identifier}` in the configuration')
+
+    x = step_sanity(config, 'downsample_to_lfp', identifier)
+    if x != 0:
+        logger.error(f'There is inconsistencies in the configuration for `downsample_to_lfp`: {x}')
+        raise RuntimeError(f'There is inconsistencies in the configuration for `downsample_to_lfp`: {x}')
+
+    stepconf = config[identifier]
+
+    output_file = __downsample_dat_files(
+        input_files  = stepconf['input files'],
+        num_channels = int(stepconf['number of channels']),
+        ds_factor    = int(stepconf['downsample factor']),
+        output_file  = stepconf['output file'],
+        bit_volts    = stepconf.get('bit volts'),
+        logger       = logger,
+    )
+
+    logger.info(f'Downsampled LFP written to {output_file}')
+
+    carrier[identifier] = {'ds file': output_file}
+    return carrier
+
+
+def __downsample_dat_files(input_files:list, num_channels:int, ds_factor:int, output_file:str, bit_volts:(float,list,None), logger) -> str:
+    import numpy as np
+    import h5py
+    from scipy.signal import cheby1, lfilter
+    from builtins import max as pymax, min as pymin  # this module's `from numpy import *` shadows the built-in max/min
+
+    total_frames = __check_dat_files(input_files, num_channels)
+    # Exact final row count: how many multiples of ds_factor fall in [0, total_frames).
+    # Known upfront, so the HDF5 dataset can be created at its final size — no resizing needed.
+    total_ds_frames = (total_frames + ds_factor - 1) // ds_factor
+
+    if bit_volts is None:
+        logger.warning('No `bit volts` given — output stays in raw ADC counts, not microvolts')
+    else:
+        bit_volts = np.full((num_channels, 1), bit_volts, dtype=np.float64) if isinstance(bit_volts, (int, float)) \
+            else np.array(bit_volts, dtype=np.float64).reshape(num_channels, 1)
+
+    if os.path.isfile(output_file):
+        raise RuntimeError(f'Output file already exists — delete it first: {output_file}')
+    os.makedirs(os.path.dirname(output_file), exist_ok=True)
+
+    # Read in fixed-size chunks of about one minute at 30kHz, rounded down to
+    # a whole number of downsampled frames so decimation never splits across chunks.
+    frames_per_chunk = pymax(ds_factor, (30_000 * 60 // ds_factor) * ds_factor)
+    values_per_chunk = frames_per_chunk * num_channels
+
+    b_filt, a_filt = cheby1(8, 0.05, 0.8 / ds_factor)
+    filter_order   = pymax(len(a_filt), len(b_filt)) - 1
+    filt_zi        = np.zeros((filter_order, num_channels))
+
+    # HDF5 storage chunk size: one write's worth of downsampled rows (matches how
+    # much we actually write per iteration below), capped to the dataset's own size.
+    ds_chunk_rows = pymin(frames_per_chunk // ds_factor, pymax(1, total_ds_frames))
+
+    with h5py.File(output_file, 'w') as h5f:
+        h5_ds = h5f.create_dataset(
+            'data',
+            shape=(total_ds_frames, num_channels),
+            dtype=np.float64,
+            chunks=(ds_chunk_rows, num_channels),
+            compression='gzip',
+            compression_opts=1,
+        )
+
+        ds_row_idx        = 0
+        global_sample_idx = 0
+
+        for file_idx, src_file in enumerate(input_files, 1):
+            logger.info(f'[{file_idx}/{len(input_files)}] {src_file}')
+            with open(src_file, 'rb') as in_fid:
+                while True:
+                    raw = np.fromfile(in_fid, dtype=np.int16, count=values_per_chunk)
+                    if raw.size == 0:
+                        break
+
+                    n_frames = raw.size // num_channels
+                    data     = raw[: n_frames * num_channels].reshape(n_frames, num_channels).T
+
+                    filtered = np.empty_like(data, dtype=np.float64)
+                    for ch in range(num_channels):
+                        filtered[ch], filt_zi[:, ch] = lfilter(
+                            b_filt, a_filt, data[ch].astype(np.float64), zi=filt_zi[:, ch]
+                        )
+
+                    first_idx = (-global_sample_idx) % ds_factor
+                    pick_idx  = np.arange(first_idx, n_frames, ds_factor)
+                    data_ds   = filtered[:, pick_idx]
+                    if bit_volts is not None:
+                        data_ds = data_ds * bit_volts
+                    data_ds = data_ds.T
+
+                    n_rows = data_ds.shape[0]
+                    h5_ds[ds_row_idx: ds_row_idx + n_rows] = data_ds
+                    ds_row_idx        += n_rows
+                    global_sample_idx += n_frames
+
+    if ds_row_idx != total_ds_frames:
+        raise RuntimeError(
+            f'Wrote {ds_row_idx} row(s) but expected {total_ds_frames} — the input files changed '
+            f'size during the run, or the frame count does not match what was checked upfront.'
+        )
+
+    return output_file
+
+
 def combined_recording(config:dict,identifier:str,dependencies:(list,tuple),carrier:dict):
     """
-    
+
     Combines several binary files in a one and creates a recording, then sets probe configuration, used channels, and bad channels.
-    
+
     """
     logger = logging.getLogger( config['job_id']+':'+identifier )
 
@@ -164,7 +369,7 @@ def combined_recording(config:dict,identifier:str,dependencies:(list,tuple),carr
             except BaseException as e:
                 logger.warning(f'Cannot save recording configuration into {savefile}: {e}')
 
-    logger.infor('Combined recording is created')
+    logger.info('Combined recording is created')
     carrier[identifier] = recording
     return carrier
     
@@ -303,9 +508,9 @@ def load_recording(config:dict,identifier:str,dependencies:(list,tuple),carrier:
         raise RuntimeError('Cannot load recoding configuration from `{}`: {}'.format(loadrecconf['file'],e))
     recconf['save'] = False
     
-    recording = __create_recording(recconf)
-    
-    logger.infor('Recording is loaded')
+    recording = __create_recording(recconf, config)
+
+    logger.info('Recording is loaded')
 
     carrier[identifier] = recording
     return carrier
@@ -1188,7 +1393,13 @@ def export2matlab(config:dict,identifier:str,dependencies:(list,tuple),carrier:d
 
 def upload(config:dict,identifier:str,dependencies:(list,tuple),carrier:dict): 
     """
-    Uploads current work directory to the cloud
+    Copies (or moves) the job's working directory to an explicit destination.
+
+    Config keys:
+      *destination           : path to copy/move the job's working directory to
+      >keep_base_directory   : True = copy (keep the original), False = move (default)
+      >suffix                : str appended to `destination`, or True for a random one
+
     Returns unchanged carrier dictionary
     """
 
@@ -1204,58 +1415,17 @@ def upload(config:dict,identifier:str,dependencies:(list,tuple),carrier:dict):
         logger.error(f'There is inconsistencies in the configuration `{identifier}` for `upload`: {x}')
         raise RuntimeError(f'There is inconsistencies in the configuration `{identifier}` for `upload`: {x}')
 
-    import hashlib, time, re, os
     from numpy.random import randint
-    
+
     uploadconfig = config[identifier]
 
-    cpy = uploadconfig["keep_base directory"] if "keep_base directory" in uploadconfig else False
-    suf = uploadconfig["suffix"]              if "suffix"              in uploadconfig else False
+    cpy = uploadconfig.get("keep_base_directory", False)
+    suf = uploadconfig.get("suffix", False)
     if type(suf) is bool:
         suf = f'{randint(0xffff):04d}' if suf else ''
-    
-    source      = config['job_evn']['base directory']
-    basepath    = uploadconfig["base path"]
-    if not 'destination' in uploadconfig:
-        import os
-        reconf = config[ dependencies[0] ]
-        if   'binfile'       in reconf:
-            binpath = reconf['binfile']
-        elif 'neuralynx'     in reconf:
-            binpath = reconf['neuralynx']
-        elif 'combined file' in reconf:
-            binpath = reconf['combined file']
-        else:
-            logger.error(f'Cannot find `binfile`, `neuralynx`, or `combined file` in recording dependance')
-            raise RuntimeError(f'Cannot find `binfile`, `neuralynx`, or `combined file` in recording dependance')
-        
-        binpath = os.path.normpath(binpath)
-        binpath = binpath.split(os.sep)
-        bp      = os.path.normpath(basepath)
-        bp      = bp.split(os.sep)
-        binpath = [ b for b in binpath if not b in bp ]
-        expt    = None
-        recd    = None
-        comb    = None
-        for b in binpath:
-            if   "experiment" in b:
-                expt = b
-            elif "recording"  in b:
-                recd = b
-            elif "combined"   in b:
-                comb,_ = os.path.splitext(b)
-        
-        uploadconfig['destination'] = os.path.join(\
-            os.path.normpath(basepath), \
-            binpath[0],
-            binpath[0] + \
-            ( "" if expt is None else f"-{expt}" ) +\
-            ( "" if recd is None else f"-{recd}" ) +\
-            ( "" if comb is None else f"-{comb}" )  )
 
-            
-            
-    destination = uploadconfig['destination']+f"-{config['job_id']}"+suf
+    source      = config['job_evn']['base directory']
+    destination = uploadconfig['destination'] + f"-{config['job_id']}" + suf
     try:
         os.makedirs(
             os.path.dirname(destination), 

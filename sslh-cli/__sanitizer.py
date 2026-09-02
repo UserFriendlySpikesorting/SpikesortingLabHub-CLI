@@ -56,6 +56,10 @@ STEP_DEPENDENCIES = {
     ],
     # Upload whatever was done!
     "upload": [("recording","combined_recording")],
+    # Combine raw Open Ephys .dat files into one file — standalone, no prior step required
+    "combine_raw_dat": [],
+    # Downsample raw Open Ephys .dat files to LFP — standalone, no prior step required
+    "downsample_to_lfp": [],
 }
 
 
@@ -172,10 +176,21 @@ STEP_PARAMETERS = {
         ">marks"   : [ str ]
     },
     "upload"       : {
-        "*base path"          : str,
-        ">destination"        : str,
+        "*destination"        : str,
         ">keep_base_directory": bool,
         ">suffix"             : (str, bool)
+    },
+    "combine_raw_dat": {
+        "*input files"        : [str],
+        "*number of channels" : int,
+        "*output file"        : str,
+    },
+    "downsample_to_lfp": {
+        "*input files"        : [str],
+        "*number of channels" : int,
+        "*downsample factor"  : int,
+        "*output file"        : str,
+        ">bit volts"          : (float, [float]),
     }
 }
 

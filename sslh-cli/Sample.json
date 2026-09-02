@@ -1,0 +1,41 @@
+{
+    "version": "0.4.1",
+    "job_id": "combine_ds_example",
+    "job_evn": {
+        "base directory": "/path/to/experiment",
+        "job_kwargs": {
+            "n_jobs": 4,
+            "total_memory": "4G",
+            "chunk_duration": "1s",
+            "progress_bar": true
+        }
+    },
+    "job_steps": [
+        {
+            "function": "combine_raw_dat",
+            "identifier": "my_raw",
+            "depends": []
+        },
+        {
+            "function": "downsample_to_lfp",
+            "identifier": "my_lfp",
+            "depends": []
+        }
+    ],
+    "my_raw": {
+        "input files": [
+            "/path/to/20250521_HDC_Xsom_P6/RecordNode/experiment1/recording1/continuous/proc/continuous.dat"
+        ],
+        "number of channels": 64,
+        "output file": "/path/to/20250521_HDC_Xsom_P6/combined_HDC_Xsom_P6/combined_raw_HDC_Xsom_P6.dat"
+    },
+    "my_lfp": {
+        "input files": [
+            "/path/to/20250521_HDC_Xsom_P6/RecordNode/experiment1/recording1/continuous/proc/continuous.dat"
+        ],
+        "number of channels": 64,
+        "downsample factor": 30,
+        "output file": "/path/to/20250521_HDC_Xsom_P6/combined_HDC_Xsom_P6/combined_ds30_HDC_Xsom_P6.h5",
+        "bit volts": 0.195
+    }
+}
