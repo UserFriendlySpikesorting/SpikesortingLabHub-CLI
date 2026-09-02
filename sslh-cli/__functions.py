@@ -98,9 +98,13 @@ def __combine_dat_files(input_files:list, num_channels:int, output_file:str, log
     return output_file
 
 
-def __check_dat_files(input_files:list, num_channels:int):
-    """Raise if any input file is missing or its size is not a whole number of frames."""
+def __check_dat_files(input_files:list, num_channels:int) -> int:
+    """
+    Raise if any input file is missing or its size is not a whole number of frames.
+    Returns the combined frame count across all files.
+    """
     bytes_per_frame = num_channels * 2
+    total_frames = 0
     for p in input_files:
         if not os.path.isfile(p):
             raise RuntimeError(f'Input file does not exist: {p}')
@@ -109,6 +113,8 @@ def __check_dat_files(input_files:list, num_channels:int):
             raise RuntimeError(
                 f'File size ({size} B) is not a multiple of number of channels * 2 ({bytes_per_frame}): {p}'
             )
+        total_frames += size // bytes_per_frame
+    return total_frames
 
 
 def downsample_to_lfp(config:dict, identifier:str, dependencies:(list,tuple), carrier:dict):
@@ -162,9 +168,12 @@ def __downsample_dat_files(input_files:list, num_channels:int, ds_factor:int, ou
     import numpy as np
     import h5py
     from scipy.signal import cheby1, lfilter
-    from builtins import max as pymax  # this module's `from numpy import *` shadows the built-in max/min
+    from builtins import max as pymax, min as pymin  # this module's `from numpy import *` shadows the built-in max/min
 
-    __check_dat_files(input_files, num_channels)
+    total_frames = __check_dat_files(input_files, num_channels)
+    # Exact final row count: how many multiples of ds_factor fall in [0, total_frames).
+    # Known upfront, so the HDF5 dataset can be created at its final size — no resizing needed.
+    total_ds_frames = (total_frames + ds_factor - 1) // ds_factor
 
     if bit_volts is None:
         logger.warning('No `bit volts` given — output stays in raw ADC counts, not microvolts')
@@ -185,13 +194,16 @@ def __downsample_dat_files(input_files:list, num_channels:int, ds_factor:int, ou
     filter_order   = pymax(len(a_filt), len(b_filt)) - 1
     filt_zi        = np.zeros((filter_order, num_channels))
 
+    # HDF5 storage chunk size: one write's worth of downsampled rows (matches how
+    # much we actually write per iteration below), capped to the dataset's own size.
+    ds_chunk_rows = pymin(frames_per_chunk // ds_factor, pymax(1, total_ds_frames))
+
     with h5py.File(output_file, 'w') as h5f:
         h5_ds = h5f.create_dataset(
             'data',
-            shape=(0, num_channels),
-            maxshape=(None, num_channels),
+            shape=(total_ds_frames, num_channels),
             dtype=np.float64,
-            chunks=(4096, num_channels),
+            chunks=(ds_chunk_rows, num_channels),
             compression='gzip',
             compression_opts=1,
         )
@@ -224,10 +236,15 @@ def __downsample_dat_files(input_files:list, num_channels:int, ds_factor:int, ou
                     data_ds = data_ds.T
 
                     n_rows = data_ds.shape[0]
-                    h5_ds.resize(ds_row_idx + n_rows, axis=0)
                     h5_ds[ds_row_idx: ds_row_idx + n_rows] = data_ds
                     ds_row_idx        += n_rows
                     global_sample_idx += n_frames
+
+    if ds_row_idx != total_ds_frames:
+        raise RuntimeError(
+            f'Wrote {ds_row_idx} row(s) but expected {total_ds_frames} — the input files changed '
+            f'size during the run, or the frame count does not match what was checked upfront.'
+        )
 
     return output_file
 
