@@ -1420,9 +1420,9 @@ def upload(config:dict,identifier:str,dependencies:(list,tuple),carrier:dict):
     uploadconfig = config[identifier]
 
     cpy = uploadconfig.get("keep_base_directory", False)
-    suf = uploadconfig.get("suffix", False)
-    if type(suf) is bool:
-        suf = f'{randint(0xffff):04d}' if suf else ''
+    suf = uploadconfig.get("suffix", '')
+    if type(suf) is bool and suf:
+        suf = f'-{randint(0xffff):04d}'
 
     source      = config['job_evn']['base directory']
     destination = uploadconfig['destination'] + f"-{config['job_id']}" + suf
