@@ -176,8 +176,7 @@ STEP_PARAMETERS = {
         ">marks"   : [ str ]
     },
     "upload"       : {
-        "*base path"          : str,
-        ">destination"        : str,
+        "*destination"        : str,
         ">keep_base_directory": bool,
         ">suffix"             : (str, bool)
     },
