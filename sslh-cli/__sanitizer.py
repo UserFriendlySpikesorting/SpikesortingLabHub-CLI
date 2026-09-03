@@ -55,7 +55,7 @@ STEP_DEPENDENCIES = {
         ("phy_export","import_from_phy")
     ],
     # Upload whatever was done!
-    "upload": [("recording","combined_recording")],
+    "upload": [],
     # Combine raw Open Ephys .dat files into one file — standalone, no prior step required
     "combine_raw_dat": [],
     # Downsample raw Open Ephys .dat files to LFP — standalone, no prior step required
